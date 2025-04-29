@@ -2,8 +2,8 @@
 """
 Synteny Block Detector
 This script detects all synteny blocks between two genome sequences provided as FASTA files.
-It uses an efficient k-mer based approach optimized for large genomic sequences.
-Usage: python improved_synteny_detector.py <genome1.fasta> <genome2.fasta> <output.txt> [min_block_length]
+It uses Ukkonen's algorithm for efficient suffix tree construction to identify common substrings.
+Usage: python syndet.py <genome1.fasta> <genome2.fasta> <output.txt> [min_block_length]
 """
 
 import sys
@@ -30,75 +30,216 @@ SyntenyBlock = namedtuple("SyntenyBlock", [
 # Initialize constants
 INF = float('inf')  # Definition of infinity
 
+# ----------------- Ukkonen's Suffix Tree Implementation -----------------
+
+class Node:
+    """Node in the suffix tree."""
+    def __init__(self, leaf=False):
+        self.children = {}  # {char: (node, start_idx, end_idx)}
+        self.leaf = leaf
+        self.suffix_link = None
+        self.id = -1  # Will be used to identify which string this suffix belongs to
+        self.suffix_idx = -1  # Index of the suffix in the original string
+
+class SuffixTree:
+    """Suffix tree implementation using Ukkonen's algorithm."""
+    def __init__(self):
+        self.root = Node()
+        self.root.suffix_link = self.root
+        
+    def build(self, text1, text2):
+        """Build a generalized suffix tree for two strings using Ukkonen's algorithm."""
+        # Combine sequences with a unique separator
+        self.separator = "#"  # Must not appear in either string
+        self.full_text = text1 + self.separator + text2
+        self.text1_len = len(text1)
+        self.text2_len = len(text2)
+        self.length = len(self.full_text)
+        
+        # Active point tracking
+        self.active_node = self.root
+        self.active_edge = -1
+        self.active_length = 0
+        
+        # Counter for remaining suffixes to be inserted
+        self.remainder = 0
+        self.pos = -1
+        
+        # For end position of leafs
+        self.global_end = [-1]
+        
+        for i in range(self.length):
+            self.pos = i
+            self.global_end[0] = i
+            self.remainder += 1
+            
+            # Insert all remaining suffixes
+            last_created_node = None
+            
+            while self.remainder > 0:
+                # If active length is zero, active edge must be updated
+                if self.active_length == 0:
+                    self.active_edge = i
+                
+                # Check if active edge exists from active node
+                if self.active_edge >= 0 and self.full_text[self.active_edge] not in self.active_node.children:
+                    # Create a new leaf node
+                    leaf = Node(leaf=True)
+                    if i < self.text1_len:
+                        leaf.id = 1
+                        leaf.suffix_idx = i - self.remainder + 1
+                    else:
+                        leaf.id = 2
+                        leaf.suffix_idx = i - self.remainder + 1 - self.text1_len - 1
+                    
+                    self.active_node.children[self.full_text[self.active_edge]] = (leaf, i, self.global_end)
+                    
+                    # Set suffix link for previously created internal node
+                    if last_created_node is not None:
+                        last_created_node.suffix_link = self.active_node
+                        last_created_node = None
+                    
+                else:
+                    # Next character in the tree
+                    next_node, edge_start, edge_end = self.active_node.children[self.full_text[self.active_edge]]
+                    edge_length = self._edge_length(edge_start, edge_end)
+                    
+                    # If active length is within the current edge
+                    if self.active_length >= edge_length:
+                        # Move active point down
+                        self.active_edge += edge_length
+                        self.active_length -= edge_length
+                        self.active_node = next_node
+                        continue
+                    
+                    # If next character already exists in the tree
+                    if self.full_text[edge_start + self.active_length] == self.full_text[i]:
+                        self.active_length += 1
+                        
+                        # Set suffix link for previously created internal node
+                        if last_created_node is not None:
+                            last_created_node.suffix_link = self.active_node
+                            last_created_node = None
+                        
+                        # Rule 3: Done for this phase
+                        break
+                    
+                    # Split the edge
+                    split_node = Node()
+                    self.active_node.children[self.full_text[self.active_edge]] = (split_node, edge_start, [edge_start + self.active_length - 1])
+                    
+                    # Create new leaf
+                    leaf = Node(leaf=True)
+                    if i < self.text1_len:
+                        leaf.id = 1
+                        leaf.suffix_idx = i - self.remainder + 1
+                    else:
+                        leaf.id = 2
+                        leaf.suffix_idx = i - self.remainder + 1 - self.text1_len - 1
+                    
+                    split_node.children[self.full_text[i]] = (leaf, i, self.global_end)
+                    
+                    # Update original node in split node's children
+                    split_node.children[self.full_text[edge_start + self.active_length]] = (next_node, edge_start + self.active_length, edge_end)
+                    
+                    # Set suffix link
+                    if last_created_node is not None:
+                        last_created_node.suffix_link = split_node
+                    
+                    last_created_node = split_node
+                
+                # Decrease remaining suffixes and follow suffix link if needed
+                self.remainder -= 1
+                
+                if self.active_node == self.root and self.active_length > 0:
+                    self.active_length -= 1
+                    self.active_edge = i - self.remainder + 1
+                else:
+                    self.active_node = self.active_node.suffix_link if self.active_node.suffix_link else self.root
+    
+    def _edge_length(self, start, end):
+        """Calculate edge length."""
+        if isinstance(end, list):
+            return end[0] - start + 1
+        return end - start + 1
+    
+    def find_common_substrings(self, min_length=100):
+        """Find all common substrings between the two texts."""
+        common_substrings = []
+        
+        # DFS to find nodes with both strings
+        self._dfs_find_common(self.root, 0, "", {1: False, 2: False}, common_substrings, min_length)
+        
+        return common_substrings
+    
+    def _dfs_find_common(self, node, path_len, current_path, string_ids, common_substrings, min_length):
+        """DFS to find nodes representing common substrings."""
+        # Mark which strings are represented in the current path
+        if node.leaf:
+            string_ids[node.id] = True
+            return {1: node.id == 1, 2: node.id == 2}
+        
+        # Process each child
+        strings_below = {1: False, 2: False}
+        
+        for char, (child, start, end) in node.children.items():
+            # Skip the separator character
+            if self.full_text[start] == self.separator:
+                continue
+            
+            # Calculate edge length
+            edge_len = self._edge_length(start, end)
+            child_path = self.full_text[start:start + edge_len] if isinstance(end, list) else self.full_text[start:end + 1]
+            
+            # Recursively process the child
+            child_strings = self._dfs_find_common(child, path_len + edge_len, current_path + child_path, 
+                                                dict(string_ids), common_substrings, min_length)
+            
+            # Update strings below this node
+            strings_below[1] = strings_below[1] or child_strings[1]
+            strings_below[2] = strings_below[2] or child_strings[2]
+        
+        # If this path represents both strings and is long enough, add to common substrings
+        if strings_below[1] and strings_below[2] and path_len >= min_length:
+            # Find occurrences in both strings
+            self._find_occurrences(current_path, common_substrings)
+        
+        return strings_below
+    
+    def _find_occurrences(self, pattern, common_substrings):
+        """Find all occurrences of pattern in both strings and add to common substrings."""
+        # Naive string matching is used here for simplicity
+        # In a real implementation, we would use the suffix tree itself to locate the positions
+        
+        text1 = self.full_text[:self.text1_len]
+        text2 = self.full_text[self.text1_len + 1:self.text1_len + 1 + self.text2_len]
+        
+        for i in range(len(text1) - len(pattern) + 1):
+            if text1[i:i + len(pattern)] == pattern:
+                for j in range(len(text2) - len(pattern) + 1):
+                    if text2[j:j + len(pattern)] == pattern:
+                        # Found a match in both texts
+                        seq1_start = i
+                        seq1_end = i + len(pattern) - 1
+                        seq2_start = j
+                        seq2_end = j + len(pattern) - 1
+                        
+                        common_substrings.append(SyntenyBlock(
+                            seq1_start, seq1_end,
+                            seq2_start, seq2_end,
+                            len(pattern), pattern, 100.0  # 100% identity for exact matches
+                        ))
+
 def find_common_substrings(seq1, seq2, min_length=100):
-    """Find common substrings between two sequences using a more straightforward approach.
-    This implementation is optimized for genomic sequences and avoids memory issues
-    that can occur with large suffix trees."""
-    common_substrings = []
-    logging.info(f"Finding common substrings with minimum length {min_length}...")
+    """Find common substrings between two sequences using Ukkonen's algorithm."""
+    logging.info(f"Finding common substrings with minimum length {min_length} using Ukkonen's algorithm...")
     
-    # For very large sequences, we use a k-mer based approach with smaller chunks
-    k = min_length
+    # Build suffix tree
+    suffix_tree = SuffixTree()
+    suffix_tree.build(seq1, seq2)
     
-    # Create a dictionary of k-mers from seq1
-    seq1_kmers = {}
-    logging.info(f"Indexing k-mers from sequence 1...")
-    for i in range(len(seq1) - k + 1):
-        if i % 1000000 == 0:  # Log progress for very large sequences
-            logging.info(f"  Processed {i:,} positions in sequence 1")
-        
-        kmer = seq1[i:i+k]
-        if kmer not in seq1_kmers:
-            seq1_kmers[kmer] = []
-        seq1_kmers[kmer].append(i)
-    
-    # Look for matches in seq2
-    logging.info(f"Searching for matching k-mers in sequence 2...")
-    processed = 0
-    matches_found = 0
-    
-    for i in range(len(seq2) - k + 1):
-        if i % 1000000 == 0:  # Log progress
-            logging.info(f"  Processed {i:,} positions in sequence 2, found {matches_found} potential matches")
-        
-        processed += 1
-        kmer = seq2[i:i+k]
-        
-        if kmer in seq1_kmers:
-            matches_found += 1
-            # For each occurrence in seq1
-            for pos1 in seq1_kmers[kmer]:
-                # Extend match as far as possible in both directions
-                left_extension = 0
-                right_extension = k
-                
-                # Extend to the left
-                while pos1 - left_extension - 1 >= 0 and i - left_extension - 1 >= 0 and \
-                      seq1[pos1 - left_extension - 1] == seq2[i - left_extension - 1]:
-                    left_extension += 1
-                
-                # Extend to the right
-                while pos1 + right_extension < len(seq1) and i + right_extension < len(seq2) and \
-                      seq1[pos1 + right_extension] == seq2[i + right_extension]:
-                    right_extension += 1
-                
-                # Calculate final positions
-                seq1_start = pos1 - left_extension
-                seq1_end = pos1 + right_extension - 1
-                seq2_start = i - left_extension
-                seq2_end = i + right_extension - 1
-                total_length = right_extension + left_extension
-                
-                # Extract the sequence
-                sequence = seq1[seq1_start:seq1_end + 1]
-                
-                # Add to results if length is sufficient
-                if total_length >= min_length:
-                    common_substrings.append(SyntenyBlock(
-                        seq1_start, seq1_end,
-                        seq2_start, seq2_end,
-                        total_length, sequence, 100.0  # 100% identity for exact matches
-                    ))
+    # Find common substrings
+    common_substrings = suffix_tree.find_common_substrings(min_length)
     
     logging.info(f"Found {len(common_substrings)} initial common substrings")
     
@@ -170,10 +311,10 @@ def calculate_gc_content(sequence):
     return (gc_count / len(sequence)) * 100.0
 
 def detect_synteny_blocks(seq1, seq2, min_length=100):
-    """Detect all synteny blocks between two sequences using an optimized method."""
+    """Detect all synteny blocks between two sequences using Ukkonen's algorithm."""
     logging.info(f"Finding synteny blocks with minimum length {min_length}...")
     
-    # Find common substrings using optimized method
+    # Find common substrings using Ukkonen's algorithm
     common_substrings = find_common_substrings(seq1, seq2, min_length)
     
     # Sort by length (descending)
@@ -181,70 +322,33 @@ def detect_synteny_blocks(seq1, seq2, min_length=100):
     
     logging.info(f"Found {len(common_substrings)} common substrings with length >= {min_length}")
     
-    # For large genomic sequences, we need a more efficient filtering approach
-    if len(common_substrings) > 1000:
-        logging.info("Large number of blocks detected, using optimized filtering...")
+    # Filter for non-overlapping blocks
+    selected_blocks = []
+    max_overlap_allowed = min_length // 4  # Allow some overlap (25% of min length)
+    
+    count = 1
+    for block in common_substrings:
+        logging.info(f"Processing block {count} with length {len(block)} of {len(common_substrings)} ")
+        # Skip if too much overlap with existing blocks
+        should_add = True
+        for existing in selected_blocks:
+            # Check overlap in seq1
+            s1_overlap_start = max(block.seq1_start, existing.seq1_start)
+            s1_overlap_end = min(block.seq1_end, existing.seq1_end)
+            s1_overlap = max(0, s1_overlap_end - s1_overlap_start + 1)
+            
+            # Check overlap in seq2
+            s2_overlap_start = max(block.seq2_start, existing.seq2_start)
+            s2_overlap_end = min(block.seq2_end, existing.seq2_end)
+            s2_overlap = max(0, s2_overlap_end - s2_overlap_start + 1)
+            
+            # If overlap is too large in either sequence, skip this block
+            if s1_overlap > max_overlap_allowed or s2_overlap > max_overlap_allowed:
+                should_add = False
+                break
         
-        # Use a more memory-efficient approach for large datasets
-        # First, identify highly similar regions by clustering blocks
-        selected_blocks = []
-        max_overlap_allowed = min_length // 4  # Allow some overlap (25% of min length)
-        
-        # Take the longest blocks first, but limit logging
-        block_count = 0
-        for block in common_substrings:
-            block_count += 1
-            if block_count % 1000 == 0:
-                logging.info(f"Processing block {block_count} of {len(common_substrings)}")
-            
-            # Skip if too much overlap with existing blocks
-            should_add = True
-            for existing in selected_blocks:
-                # Check overlap in seq1
-                s1_overlap_start = max(block.seq1_start, existing.seq1_start)
-                s1_overlap_end = min(block.seq1_end, existing.seq1_end)
-                s1_overlap = max(0, s1_overlap_end - s1_overlap_start + 1)
-                
-                # Check overlap in seq2
-                s2_overlap_start = max(block.seq2_start, existing.seq2_start)
-                s2_overlap_end = min(block.seq2_end, existing.seq2_end)
-                s2_overlap = max(0, s2_overlap_end - s2_overlap_start + 1)
-                
-                # If overlap is too large in either sequence, skip this block
-                if s1_overlap > max_overlap_allowed or s2_overlap > max_overlap_allowed:
-                    should_add = False
-                    break
-            
-            if should_add:
-                selected_blocks.append(block)
-    else:
-        # For smaller datasets, use the original approach
-        selected_blocks = []
-        max_overlap_allowed = min_length // 4  # Allow some overlap (25% of min length)
-        
-        for block_count, block in enumerate(common_substrings, 1):
-            logging.info(f"Processing block {block_count} with length {block.length} of {len(common_substrings)}")
-            
-            # Skip if too much overlap with existing blocks
-            should_add = True
-            for existing in selected_blocks:
-                # Check overlap in seq1
-                s1_overlap_start = max(block.seq1_start, existing.seq1_start)
-                s1_overlap_end = min(block.seq1_end, existing.seq1_end)
-                s1_overlap = max(0, s1_overlap_end - s1_overlap_start + 1)
-                
-                # Check overlap in seq2
-                s2_overlap_start = max(block.seq2_start, existing.seq2_start)
-                s2_overlap_end = min(block.seq2_end, existing.seq2_end)
-                s2_overlap = max(0, s2_overlap_end - s2_overlap_start + 1)
-                
-                # If overlap is too large in either sequence, skip this block
-                if s1_overlap > max_overlap_allowed or s2_overlap > max_overlap_allowed:
-                    should_add = False
-                    break
-            
-            if should_add:
-                selected_blocks.append(block)
+        if should_add:
+            selected_blocks.append(block)
     
     # Sort by position in seq1
     selected_blocks.sort(key=lambda x: x.seq1_start)
@@ -283,7 +387,7 @@ def write_synteny_blocks(blocks, output_file, seq1_header, seq2_header, elapsed_
 
 def main():
     if len(sys.argv) < 4:
-        logging.info("Usage: python improved_synteny_detector.py <genome1.fasta> <genome2.fasta> <output.txt> [min_block_length]")
+        logging.info("Usage: python syndet.py <genome1.fasta> <genome2.fasta> <output.txt> [min_block_length]")
         sys.exit(1)
     
     genome1_file = sys.argv[1]
@@ -312,13 +416,6 @@ def main():
     
     write_synteny_blocks(blocks, output_file, header1, header2, end_time - start_time)
     logging.info(f"Synteny blocks written to {output_file}")
-    
-    # # logging.info summary of all blocks to console
-    # logging.info("\nSummary of synteny blocks:")
-    # logging.info("Block ID\tSeq1 Range\t\tSeq2 Range\t\tLength")
-    # logging.info("-" * 70)
-    # for i, block in enumerate(blocks):
-    #     logging.info(f"{i+1}\t\t{block.seq1_start}-{block.seq1_end}\t\t{block.seq2_start}-{block.seq2_end}\t\t{block.length}")
 
 if __name__ == "__main__":
     main()
