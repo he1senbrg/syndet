@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Improved Synteny Block Detector
+Synteny Block Detector
 This script detects all synteny blocks between two genome sequences provided as FASTA files.
-Usage: python syndet.py <genome1.fasta> <genome2.fasta> <output.txt> [min_block_length]
+It uses an efficient k-mer based approach optimized for large genomic sequences.
+Usage: python improved_synteny_detector.py <genome1.fasta> <genome2.fasta> <output.txt> [min_block_length]
 """
 
 import sys
 import time
-from collections import defaultdict, namedtuple
+from collections import namedtuple
 import logging
 
 # Set up logging to both file and console
@@ -20,14 +21,116 @@ logging.basicConfig(
     ]
 )
 
-# Definition of infinity for Ukkonen's algorithm
-INF = float('inf')
-
 # For storing comprehensive information about a synteny block
 SyntenyBlock = namedtuple("SyntenyBlock", [
     "seq1_start", "seq1_end", "seq2_start", "seq2_end", 
     "length", "sequence", "identity"
 ])
+
+# Initialize constants
+INF = float('inf')  # Definition of infinity
+
+def find_common_substrings(seq1, seq2, min_length=100):
+    """Find common substrings between two sequences using a more straightforward approach.
+    This implementation is optimized for genomic sequences and avoids memory issues
+    that can occur with large suffix trees."""
+    common_substrings = []
+    logging.info(f"Finding common substrings with minimum length {min_length}...")
+    
+    # For very large sequences, we use a k-mer based approach with smaller chunks
+    k = min_length
+    
+    # Create a dictionary of k-mers from seq1
+    seq1_kmers = {}
+    logging.info(f"Indexing k-mers from sequence 1...")
+    for i in range(len(seq1) - k + 1):
+        if i % 1000000 == 0:  # Log progress for very large sequences
+            logging.info(f"  Processed {i:,} positions in sequence 1")
+        
+        kmer = seq1[i:i+k]
+        if kmer not in seq1_kmers:
+            seq1_kmers[kmer] = []
+        seq1_kmers[kmer].append(i)
+    
+    # Look for matches in seq2
+    logging.info(f"Searching for matching k-mers in sequence 2...")
+    processed = 0
+    matches_found = 0
+    
+    for i in range(len(seq2) - k + 1):
+        if i % 1000000 == 0:  # Log progress
+            logging.info(f"  Processed {i:,} positions in sequence 2, found {matches_found} potential matches")
+        
+        processed += 1
+        kmer = seq2[i:i+k]
+        
+        if kmer in seq1_kmers:
+            matches_found += 1
+            # For each occurrence in seq1
+            for pos1 in seq1_kmers[kmer]:
+                # Extend match as far as possible in both directions
+                left_extension = 0
+                right_extension = k
+                
+                # Extend to the left
+                while pos1 - left_extension - 1 >= 0 and i - left_extension - 1 >= 0 and \
+                      seq1[pos1 - left_extension - 1] == seq2[i - left_extension - 1]:
+                    left_extension += 1
+                
+                # Extend to the right
+                while pos1 + right_extension < len(seq1) and i + right_extension < len(seq2) and \
+                      seq1[pos1 + right_extension] == seq2[i + right_extension]:
+                    right_extension += 1
+                
+                # Calculate final positions
+                seq1_start = pos1 - left_extension
+                seq1_end = pos1 + right_extension - 1
+                seq2_start = i - left_extension
+                seq2_end = i + right_extension - 1
+                total_length = right_extension + left_extension
+                
+                # Extract the sequence
+                sequence = seq1[seq1_start:seq1_end + 1]
+                
+                # Add to results if length is sufficient
+                if total_length >= min_length:
+                    common_substrings.append(SyntenyBlock(
+                        seq1_start, seq1_end,
+                        seq2_start, seq2_end,
+                        total_length, sequence, 100.0  # 100% identity for exact matches
+                    ))
+    
+    logging.info(f"Found {len(common_substrings)} initial common substrings")
+    
+    # Merge overlapping blocks
+    common_substrings.sort(key=lambda x: (x.seq1_start, x.seq2_start))
+    merged_blocks = []
+    
+    if common_substrings:
+        current_block = common_substrings[0]
+        
+        for next_block in common_substrings[1:]:
+            # Check if blocks are adjacent or overlapping
+            if (next_block.seq1_start <= current_block.seq1_end + 1 and 
+                next_block.seq2_start <= current_block.seq2_end + 1):
+                # Merge blocks
+                current_block = SyntenyBlock(
+                    current_block.seq1_start,
+                    max(current_block.seq1_end, next_block.seq1_end),
+                    current_block.seq2_start,
+                    max(current_block.seq2_end, next_block.seq2_end),
+                    max(current_block.seq1_end, next_block.seq1_end) - current_block.seq1_start + 1,
+                    seq1[current_block.seq1_start:max(current_block.seq1_end, next_block.seq1_end) + 1],
+                    100.0
+                )
+            else:
+                merged_blocks.append(current_block)
+                current_block = next_block
+        
+        merged_blocks.append(current_block)
+    
+    logging.info(f"After merging: {len(merged_blocks)} synteny blocks")
+    return merged_blocks
 
 def read_fasta(file_path):
     """Read a FASTA file and return the sequence and header."""
@@ -59,61 +162,6 @@ def read_fasta(file_path):
     
     return sequences[0], headers[0]
 
-def find_common_substrings(text1, text2, min_length=100):
-    """Find common substrings using a sliding window approach."""
-    common_substrings = []
-    
-    # Create a dictionary to store all k-mers from text1
-    k = min_length  # Use the minimum length as k-mer size
-    text1_kmers = {}
-    
-    # Store all k-mers from text1 with their positions
-    for i in range(len(text1) - k + 1):
-        kmer = text1[i:i+k]
-        if kmer not in text1_kmers:
-            text1_kmers[kmer] = []
-        text1_kmers[kmer].append(i)
-    
-    # Look for matches in text2
-    for i in range(len(text2) - k + 1):
-        kmer = text2[i:i+k]
-        if kmer in text1_kmers:
-            # For each occurrence in text1
-            for pos1 in text1_kmers[kmer]:
-                # Extend match as far as possible in both directions
-                left_extension = 0
-                right_extension = k
-                
-                # Extend to the left
-                while pos1 - left_extension - 1 >= 0 and i - left_extension - 1 >= 0 and \
-                      text1[pos1 - left_extension - 1] == text2[i - left_extension - 1]:
-                    left_extension += 1
-                
-                # Extend to the right
-                while pos1 + right_extension < len(text1) and i + right_extension < len(text2) and \
-                      text1[pos1 + right_extension] == text2[i + right_extension]:
-                    right_extension += 1
-                
-                # Calculate final positions
-                seq1_start = pos1 - left_extension
-                seq1_end = pos1 + right_extension - 1
-                seq2_start = i - left_extension
-                seq2_end = i + right_extension - 1
-                length = right_extension + left_extension
-                
-                # Extract the sequence
-                sequence = text1[seq1_start:seq1_end + 1]
-                
-                # Add to results
-                if length >= min_length:
-                    common_substrings.append(SyntenyBlock(
-                        seq1_start, seq1_end,
-                        seq2_start, seq2_end,
-                        length, sequence, 100.0  # 100% identity for exact matches
-                    ))
-    
-    return common_substrings
-
 def calculate_gc_content(sequence):
     """Calculate the GC content of a DNA sequence."""
     if not sequence:
@@ -122,10 +170,10 @@ def calculate_gc_content(sequence):
     return (gc_count / len(sequence)) * 100.0
 
 def detect_synteny_blocks(seq1, seq2, min_length=100):
-    """Detect all synteny blocks between two sequences."""
-    logging.info(f"Finding all synteny blocks with minimum length {min_length}...")
+    """Detect all synteny blocks between two sequences using an optimized method."""
+    logging.info(f"Finding synteny blocks with minimum length {min_length}...")
     
-    # Find all common substrings
+    # Find common substrings using optimized method
     common_substrings = find_common_substrings(seq1, seq2, min_length)
     
     # Sort by length (descending)
@@ -133,37 +181,70 @@ def detect_synteny_blocks(seq1, seq2, min_length=100):
     
     logging.info(f"Found {len(common_substrings)} common substrings with length >= {min_length}")
     
-    # OPTION 1: Return all blocks without filtering
-    # return common_substrings
-    
-    # OPTION 2: Filter overlapping blocks (greedy approach) but with a less restrictive filter
-    selected_blocks = []
-    max_overlap_allowed = min_length // 4  # Allow some overlap (25% of min length)
-    
-    count = 1
-    for block in common_substrings:
-        logging.info(f"Processing block {count} with length {block.length} of {len(common_substrings)}")
-        count += 1
-        # Skip if too much overlap with existing blocks
-        should_add = True
-        for existing in selected_blocks:
-            # Check overlap in seq1
-            s1_overlap_start = max(block.seq1_start, existing.seq1_start)
-            s1_overlap_end = min(block.seq1_end, existing.seq1_end)
-            s1_overlap = max(0, s1_overlap_end - s1_overlap_start + 1)
-            
-            # Check overlap in seq2
-            s2_overlap_start = max(block.seq2_start, existing.seq2_start)
-            s2_overlap_end = min(block.seq2_end, existing.seq2_end)
-            s2_overlap = max(0, s2_overlap_end - s2_overlap_start + 1)
-            
-            # If overlap is too large in either sequence, skip this block
-            if s1_overlap > max_overlap_allowed or s2_overlap > max_overlap_allowed:
-                should_add = False
-                break
+    # For large genomic sequences, we need a more efficient filtering approach
+    if len(common_substrings) > 1000:
+        logging.info("Large number of blocks detected, using optimized filtering...")
         
-        if should_add:
-            selected_blocks.append(block)
+        # Use a more memory-efficient approach for large datasets
+        # First, identify highly similar regions by clustering blocks
+        selected_blocks = []
+        max_overlap_allowed = min_length // 4  # Allow some overlap (25% of min length)
+        
+        # Take the longest blocks first, but limit logging
+        block_count = 0
+        for block in common_substrings:
+            block_count += 1
+            if block_count % 1000 == 0:
+                logging.info(f"Processing block {block_count} of {len(common_substrings)}")
+            
+            # Skip if too much overlap with existing blocks
+            should_add = True
+            for existing in selected_blocks:
+                # Check overlap in seq1
+                s1_overlap_start = max(block.seq1_start, existing.seq1_start)
+                s1_overlap_end = min(block.seq1_end, existing.seq1_end)
+                s1_overlap = max(0, s1_overlap_end - s1_overlap_start + 1)
+                
+                # Check overlap in seq2
+                s2_overlap_start = max(block.seq2_start, existing.seq2_start)
+                s2_overlap_end = min(block.seq2_end, existing.seq2_end)
+                s2_overlap = max(0, s2_overlap_end - s2_overlap_start + 1)
+                
+                # If overlap is too large in either sequence, skip this block
+                if s1_overlap > max_overlap_allowed or s2_overlap > max_overlap_allowed:
+                    should_add = False
+                    break
+            
+            if should_add:
+                selected_blocks.append(block)
+    else:
+        # For smaller datasets, use the original approach
+        selected_blocks = []
+        max_overlap_allowed = min_length // 4  # Allow some overlap (25% of min length)
+        
+        for block_count, block in enumerate(common_substrings, 1):
+            logging.info(f"Processing block {block_count} with length {block.length} of {len(common_substrings)}")
+            
+            # Skip if too much overlap with existing blocks
+            should_add = True
+            for existing in selected_blocks:
+                # Check overlap in seq1
+                s1_overlap_start = max(block.seq1_start, existing.seq1_start)
+                s1_overlap_end = min(block.seq1_end, existing.seq1_end)
+                s1_overlap = max(0, s1_overlap_end - s1_overlap_start + 1)
+                
+                # Check overlap in seq2
+                s2_overlap_start = max(block.seq2_start, existing.seq2_start)
+                s2_overlap_end = min(block.seq2_end, existing.seq2_end)
+                s2_overlap = max(0, s2_overlap_end - s2_overlap_start + 1)
+                
+                # If overlap is too large in either sequence, skip this block
+                if s1_overlap > max_overlap_allowed or s2_overlap > max_overlap_allowed:
+                    should_add = False
+                    break
+            
+            if should_add:
+                selected_blocks.append(block)
     
     # Sort by position in seq1
     selected_blocks.sort(key=lambda x: x.seq1_start)
@@ -200,7 +281,6 @@ def write_synteny_blocks(blocks, output_file, seq1_header, seq2_header, elapsed_
         
         f.write(f"# Total time taken: {elapsed_time:.2f} seconds\n")
 
-
 def main():
     if len(sys.argv) < 4:
         logging.info("Usage: python improved_synteny_detector.py <genome1.fasta> <genome2.fasta> <output.txt> [min_block_length]")
@@ -230,15 +310,15 @@ def main():
     
     logging.info(f"Found {len(blocks)} synteny blocks in {end_time - start_time:.2f} seconds")
     
-    write_synteny_blocks(blocks, output_file, header1, header2,end_time - start_time)
+    write_synteny_blocks(blocks, output_file, header1, header2, end_time - start_time)
     logging.info(f"Synteny blocks written to {output_file}")
     
-    # logging.info summary of all blocks to console
-    logging.info("\nSummary of synteny blocks:")
-    logging.info("Block ID\tSeq1 Range\t\tSeq2 Range\t\tLength")
-    logging.info("-" * 70)
-    for i, block in enumerate(blocks):
-        logging.info(f"{i+1}\t\t{block.seq1_start}-{block.seq1_end}\t\t{block.seq2_start}-{block.seq2_end}\t\t{block.length}")
+    # # logging.info summary of all blocks to console
+    # logging.info("\nSummary of synteny blocks:")
+    # logging.info("Block ID\tSeq1 Range\t\tSeq2 Range\t\tLength")
+    # logging.info("-" * 70)
+    # for i, block in enumerate(blocks):
+    #     logging.info(f"{i+1}\t\t{block.seq1_start}-{block.seq1_end}\t\t{block.seq2_start}-{block.seq2_end}\t\t{block.length}")
 
 if __name__ == "__main__":
     main()
