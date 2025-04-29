@@ -2,6 +2,18 @@
 
 A Python tool for detecting synteny blocks (conserved regions) between genomic sequences using Ukkonen's suffix tree algorithm.
 
+## Overview
+
+This script uses a k-mer based approach for detecting common substrings between two sequences. Here's how it works:
+
+- K-mer indexing: It extracts all k-length substrings (k-mers) from the first sequence and stores their positions
+- Matching: It scans the second sequence for the same k-mers.
+- Extension: When a matching k-mer is found, it tries to extend the match left and right as far as possible while the characters match.
+- Merging: Overlapping or adjacent matches are merged into longer synteny blocks.
+- Filtering: It applies heuristics to filter overlapping blocks and keep the best ones.
+
+This is a heuristic method, more memory-efficient and suitable for large genomic sequences, but it does not construct a suffix tree or suffix array, and thus avoids the complexity of Ukkonen’s or McCreight’s algorithms.
+
 ## Installation
 
 ### Prerequisites
