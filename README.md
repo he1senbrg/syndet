@@ -1,6 +1,6 @@
 # Synteny Block Detector
 
-A Python tool for detecting synteny blocks (conserved regions) between genomic sequences using Ukkonen's suffix tree algorithm.
+A Python tool for detecting synteny blocks (conserved regions) between genomic sequences.
 
 ## Overview
 
