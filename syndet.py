@@ -8,7 +8,7 @@ Usage: python syndet.py <genome1.fasta> <genome2.fasta> <output.txt> [min_block_
 
 import sys
 import time
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 import logging
 
 # Set up logging to both file and console
@@ -27,208 +27,276 @@ SyntenyBlock = namedtuple("SyntenyBlock", [
     "length", "sequence", "identity"
 ])
 
-# Initialize constants
-INF = float('inf')  # Definition of infinity
+# ----------------- Optimized Ukkonen's Suffix Tree Implementation -----------------
 
-# ----------------- Ukkonen's Suffix Tree Implementation -----------------
+class Edge:
+    """Edge in the suffix tree."""
+    def __init__(self, first_char, start_node, end_node, start_index, end_index):
+        self.first_char = first_char
+        self.start_node = start_node
+        self.end_node = end_node
+        self.start_index = start_index
+        self.end_index = end_index
+        
+    def length(self, current_index):
+        """Get the length of the edge."""
+        return min(self.end_index, current_index + 1) - self.start_index
 
 class Node:
     """Node in the suffix tree."""
-    def __init__(self, leaf=False):
-        self.children = {}  # {char: (node, start_idx, end_idx)}
-        self.leaf = leaf
+    def __init__(self, suffix_index=-1, string_id=None):
+        self.edges = {}  # {first_char: Edge}
         self.suffix_link = None
-        self.id = -1  # Will be used to identify which string this suffix belongs to
-        self.suffix_idx = -1  # Index of the suffix in the original string
+        self.suffix_index = suffix_index  # -1 for internal nodes
+        self.string_id = string_id  # 1 for first string, 2 for second string
+        self.end_indices = []  # List of end indices for this node
+        self.sources = set()  # Which strings this node represents (1, 2, or both)
 
 class SuffixTree:
-    """Suffix tree implementation using Ukkonen's algorithm."""
+    """Optimized suffix tree implementation using Ukkonen's algorithm."""
     def __init__(self):
         self.root = Node()
-        self.root.suffix_link = self.root
-        
-    def build(self, text1, text2):
-        """Build a generalized suffix tree for two strings using Ukkonen's algorithm."""
-        # Combine sequences with a unique separator
-        self.separator = "#"  # Must not appear in either string
-        self.full_text = text1 + self.separator + text2
-        self.text1_len = len(text1)
-        self.text2_len = len(text2)
-        self.length = len(self.full_text)
-        
-        # Active point tracking
         self.active_node = self.root
         self.active_edge = -1
         self.active_length = 0
+        self.remaining = 0
+        self.current_index = -1
+        self.nodes = [self.root]  # List of all nodes for easy traversal
         
-        # Counter for remaining suffixes to be inserted
-        self.remainder = 0
-        self.pos = -1
+    def edge_lookup(self, node, first_char):
+        """Look up an edge by first character."""
+        if first_char in node.edges:
+            return node.edges[first_char]
+        return None
+    
+    def walk_down(self, current_node, edge):
+        """Walk down the tree to find the right active point."""
+        if self.active_length >= edge.length(self.current_index):
+            self.active_edge += edge.length(self.current_index)
+            self.active_length -= edge.length(self.current_index)
+            self.active_node = edge.end_node
+            return True
+        return False
+    
+    def build_suffix_tree(self, text, string_id=1):
+        """Build a suffix tree for a single text."""
+        # Save original string and its length
+        start_index = len(getattr(self, 'text', ''))
+        if not hasattr(self, 'text'):
+            self.text = text
+        else:
+            self.text += text
         
-        # For end position of leafs
-        self.global_end = [-1]
-        
-        for i in range(self.length):
-            self.pos = i
-            self.global_end[0] = i
-            self.remainder += 1
+        # Process one character at a time
+        for i in range(len(text)):
+            self.current_index = start_index + i
             
-            # Insert all remaining suffixes
-            last_created_node = None
+            # Add all remaining suffixes
+            self.remaining += 1
+            last_new_node = None
             
-            while self.remainder > 0:
-                # If active length is zero, active edge must be updated
+            while self.remaining > 0:
+                # If active length is zero, active edge needs to be updated
                 if self.active_length == 0:
-                    self.active_edge = i
+                    self.active_edge = self.current_index
                 
-                # Check if active edge exists from active node
-                if self.active_edge >= 0 and self.full_text[self.active_edge] not in self.active_node.children:
-                    # Create a new leaf node
-                    leaf = Node(leaf=True)
-                    if i < self.text1_len:
-                        leaf.id = 1
-                        leaf.suffix_idx = i - self.remainder + 1
-                    else:
-                        leaf.id = 2
-                        leaf.suffix_idx = i - self.remainder + 1 - self.text1_len - 1
+                # Get the active edge
+                active_edge_char = self.text[self.active_edge]
+                edge = self.edge_lookup(self.active_node, active_edge_char)
+                
+                # Create a new edge if needed
+                if edge is None:
+                    # Create new leaf node
+                    leaf = Node(self.current_index - self.remaining + 1, string_id)
+                    leaf.sources.add(string_id)
+                    self.nodes.append(leaf)
                     
-                    self.active_node.children[self.full_text[self.active_edge]] = (leaf, i, self.global_end)
+                    # Create new edge
+                    new_edge = Edge(active_edge_char, self.active_node, leaf, self.active_edge, sys.maxsize)
+                    self.active_node.edges[active_edge_char] = new_edge
                     
-                    # Set suffix link for previously created internal node
-                    if last_created_node is not None:
-                        last_created_node.suffix_link = self.active_node
-                        last_created_node = None
-                    
+                    # Set suffix link for the last created node
+                    if last_new_node is not None:
+                        last_new_node.suffix_link = self.active_node
+                        last_new_node = None
                 else:
-                    # Next character in the tree
-                    next_node, edge_start, edge_end = self.active_node.children[self.full_text[self.active_edge]]
-                    edge_length = self._edge_length(edge_start, edge_end)
-                    
-                    # If active length is within the current edge
-                    if self.active_length >= edge_length:
-                        # Move active point down
-                        self.active_edge += edge_length
-                        self.active_length -= edge_length
-                        self.active_node = next_node
+                    # Walk down to find the right active point
+                    if self.walk_down(self.active_node, edge):
                         continue
                     
-                    # If next character already exists in the tree
-                    if self.full_text[edge_start + self.active_length] == self.full_text[i]:
+                    # If current character is already on the edge
+                    next_char = self.text[edge.start_index + self.active_length]
+                    if next_char == self.text[self.current_index]:
+                        # Rule 3: already in tree, we're done for this phase
                         self.active_length += 1
                         
-                        # Set suffix link for previously created internal node
-                        if last_created_node is not None:
-                            last_created_node.suffix_link = self.active_node
-                            last_created_node = None
-                        
-                        # Rule 3: Done for this phase
+                        # Set suffix link for the last created node
+                        if last_new_node is not None:
+                            last_new_node.suffix_link = self.active_node
+                            last_new_node = None
                         break
                     
-                    # Split the edge
+                    # Create a new internal node
                     split_node = Node()
-                    self.active_node.children[self.full_text[self.active_edge]] = (split_node, edge_start, [edge_start + self.active_length - 1])
+                    split_node.sources.add(string_id)
+                    self.nodes.append(split_node)
                     
-                    # Create new leaf
-                    leaf = Node(leaf=True)
-                    if i < self.text1_len:
-                        leaf.id = 1
-                        leaf.suffix_idx = i - self.remainder + 1
-                    else:
-                        leaf.id = 2
-                        leaf.suffix_idx = i - self.remainder + 1 - self.text1_len - 1
+                    # Create a new edge for the split node
+                    original_edge = edge
+                    split_edge = Edge(active_edge_char, self.active_node, split_node, 
+                                     edge.start_index, edge.start_index + self.active_length)
+                    self.active_node.edges[active_edge_char] = split_edge
                     
-                    split_node.children[self.full_text[i]] = (leaf, i, self.global_end)
+                    # Create a new leaf node
+                    leaf = Node(self.current_index - self.remaining + 1, string_id)
+                    leaf.sources.add(string_id)
+                    self.nodes.append(leaf)
                     
-                    # Update original node in split node's children
-                    split_node.children[self.full_text[edge_start + self.active_length]] = (next_node, edge_start + self.active_length, edge_end)
+                    # Create edges from split node
+                    split_node.edges[self.text[self.current_index]] = Edge(
+                        self.text[self.current_index], split_node, leaf, self.current_index, sys.maxsize)
                     
-                    # Set suffix link
-                    if last_created_node is not None:
-                        last_created_node.suffix_link = split_node
+                    # Update original edge
+                    original_edge.start_index += self.active_length
+                    original_edge.start_node = split_node
+                    split_node.edges[self.text[original_edge.start_index]] = original_edge
                     
-                    last_created_node = split_node
+                    # Set suffix link for the last created node
+                    if last_new_node is not None:
+                        last_new_node.suffix_link = split_node
+                    last_new_node = split_node
                 
-                # Decrease remaining suffixes and follow suffix link if needed
-                self.remainder -= 1
-                
+                # Rule 1: decrease remaining and follow suffix link
+                self.remaining -= 1
                 if self.active_node == self.root and self.active_length > 0:
                     self.active_length -= 1
-                    self.active_edge = i - self.remainder + 1
+                    self.active_edge = self.current_index - self.remaining + 1
                 else:
                     self.active_node = self.active_node.suffix_link if self.active_node.suffix_link else self.root
+        
+        # Set correct end indices for leaves
+        for node in self.nodes:
+            for edge_char, edge in node.edges.items():
+                if edge.end_index == sys.maxsize:
+                    edge.end_index = self.current_index + 1
+        
+        # Mark the source for each node
+        self._mark_sources(string_id)
+        
+        return self
     
-    def _edge_length(self, start, end):
-        """Calculate edge length."""
-        if isinstance(end, list):
-            return end[0] - start + 1
-        return end - start + 1
+    def _mark_sources(self, string_id):
+        """Mark which string each node represents."""
+        # First mark all leaf nodes
+        for node in self.nodes:
+            if node.string_id == string_id:
+                node.sources.add(string_id)
+        
+        # Propagate up the tree
+        self._propagate_sources(self.root)
+    
+    def _propagate_sources(self, node):
+        """Propagate source information up the tree."""
+        if not node.edges:  # Leaf node
+            return node.sources
+        
+        # For internal nodes, collect sources from all children
+        for edge_char, edge in node.edges.items():
+            sources = self._propagate_sources(edge.end_node)
+            node.sources.update(sources)
+        
+        return node.sources
+    
+    def build_generalized_suffix_tree(self, text1, text2):
+        """Build a generalized suffix tree for two texts."""
+        # Save text lengths
+        self.text1_len = len(text1)
+        self.text2_len = len(text2)
+        
+        # Build tree for first text
+        self.build_suffix_tree(text1, 1)
+        
+        # Add a separator
+        self.separator = "#"
+        self.build_suffix_tree(self.separator, None)
+        
+        # Continue with second text
+        self.build_suffix_tree(text2, 2)
+        
+        return self
+    
+    def _extract_string(self, start_idx, end_idx):
+        """Extract a substring from the text."""
+        if start_idx < 0 or end_idx > len(self.text):
+            return ""
+        return self.text[start_idx:end_idx]
+    
+    def _collect_starting_positions(self, node, positions1, positions2):
+        """Collect starting positions of suffixes in both texts."""
+        if node.suffix_index != -1:
+            if node.string_id == 1:
+                positions1.append(node.suffix_index)
+            elif node.string_id == 2:
+                positions2.append(node.suffix_index - self.text1_len - 1)  # Adjust for separator
+            return
+        
+        # Recursive traversal
+        for edge_char, edge in node.edges.items():
+            self._collect_starting_positions(edge.end_node, positions1, positions2)
     
     def find_common_substrings(self, min_length=100):
-        """Find all common substrings between the two texts."""
+        """Find all common substrings that occur in both texts."""
         common_substrings = []
         
-        # DFS to find nodes with both strings
-        self._dfs_find_common(self.root, 0, "", {1: False, 2: False}, common_substrings, min_length)
+        # Use DFS to find nodes that represent both strings
+        self._find_common_substrings_dfs(self.root, "", common_substrings, min_length)
         
         return common_substrings
     
-    def _dfs_find_common(self, node, path_len, current_path, string_ids, common_substrings, min_length):
-        """DFS to find nodes representing common substrings."""
-        # Mark which strings are represented in the current path
-        if node.leaf:
-            string_ids[node.id] = True
-            return {1: node.id == 1, 2: node.id == 2}
+    def _find_common_substrings_dfs(self, node, current_string, common_substrings, min_length):
+        """DFS to find common substrings."""
+        # Skip nodes that don't represent both strings
+        if 1 not in node.sources or 2 not in node.sources:
+            return
         
-        # Process each child
-        strings_below = {1: False, 2: False}
-        
-        for char, (child, start, end) in node.children.items():
-            # Skip the separator character
-            if self.full_text[start] == self.separator:
+        # For each edge from this node
+        for edge_char, edge in node.edges.items():
+            # Skip separator
+            if edge_char == self.separator:
                 continue
             
-            # Calculate edge length
-            edge_len = self._edge_length(start, end)
-            child_path = self.full_text[start:start + edge_len] if isinstance(end, list) else self.full_text[start:end + 1]
+            # Get substring for this edge
+            substring = self._extract_string(edge.start_index, edge.end_index)
+            new_string = current_string + substring
             
-            # Recursively process the child
-            child_strings = self._dfs_find_common(child, path_len + edge_len, current_path + child_path, 
-                                                dict(string_ids), common_substrings, min_length)
-            
-            # Update strings below this node
-            strings_below[1] = strings_below[1] or child_strings[1]
-            strings_below[2] = strings_below[2] or child_strings[2]
-        
-        # If this path represents both strings and is long enough, add to common substrings
-        if strings_below[1] and strings_below[2] and path_len >= min_length:
-            # Find occurrences in both strings
-            self._find_occurrences(current_path, common_substrings)
-        
-        return strings_below
-    
-    def _find_occurrences(self, pattern, common_substrings):
-        """Find all occurrences of pattern in both strings and add to common substrings."""
-        # Naive string matching is used here for simplicity
-        # In a real implementation, we would use the suffix tree itself to locate the positions
-        
-        text1 = self.full_text[:self.text1_len]
-        text2 = self.full_text[self.text1_len + 1:self.text1_len + 1 + self.text2_len]
-        
-        for i in range(len(text1) - len(pattern) + 1):
-            if text1[i:i + len(pattern)] == pattern:
-                for j in range(len(text2) - len(pattern) + 1):
-                    if text2[j:j + len(pattern)] == pattern:
-                        # Found a match in both texts
-                        seq1_start = i
-                        seq1_end = i + len(pattern) - 1
-                        seq2_start = j
-                        seq2_end = j + len(pattern) - 1
+            # Check if this node represents both strings
+            if (1 in edge.end_node.sources and 2 in edge.end_node.sources and 
+                len(new_string) >= min_length):
+                
+                # Collect starting positions
+                positions1 = []
+                positions2 = []
+                self._collect_starting_positions(edge.end_node, positions1, positions2)
+                
+                # Create synteny blocks for each pair of positions
+                for pos1 in positions1:
+                    for pos2 in positions2:
+                        seq1_start = pos1
+                        seq1_end = pos1 + len(new_string) - 1
+                        seq2_start = pos2
+                        seq2_end = pos2 + len(new_string) - 1
                         
-                        common_substrings.append(SyntenyBlock(
-                            seq1_start, seq1_end,
-                            seq2_start, seq2_end,
-                            len(pattern), pattern, 100.0  # 100% identity for exact matches
-                        ))
+                        if seq1_end < self.text1_len and seq2_end < self.text2_len:
+                            common_substrings.append(SyntenyBlock(
+                                seq1_start, seq1_end,
+                                seq2_start, seq2_end,
+                                len(new_string), 
+                                self.text[pos1:pos1 + len(new_string)],
+                                100.0  # 100% identity for exact matches
+                            ))
+            
+            # Continue DFS
+            self._find_common_substrings_dfs(edge.end_node, new_string, common_substrings, min_length)
 
 def find_common_substrings(seq1, seq2, min_length=100):
     """Find common substrings between two sequences using Ukkonen's algorithm."""
@@ -236,7 +304,7 @@ def find_common_substrings(seq1, seq2, min_length=100):
     
     # Build suffix tree
     suffix_tree = SuffixTree()
-    suffix_tree.build(seq1, seq2)
+    suffix_tree.build_generalized_suffix_tree(seq1, seq2)
     
     # Find common substrings
     common_substrings = suffix_tree.find_common_substrings(min_length)
@@ -326,9 +394,7 @@ def detect_synteny_blocks(seq1, seq2, min_length=100):
     selected_blocks = []
     max_overlap_allowed = min_length // 4  # Allow some overlap (25% of min length)
     
-    count = 1
     for block in common_substrings:
-        logging.info(f"Processing block {count} with length {len(block)} of {len(common_substrings)} ")
         # Skip if too much overlap with existing blocks
         should_add = True
         for existing in selected_blocks:

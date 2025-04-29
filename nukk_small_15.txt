@@ -1,0 +1,17 @@
+# Synteny blocks between:
+# Sequence 1: NC_045512.2 Severe acute respiratory syndrome coronavirus 2 isolate Wuhan-Hu-1, complete genome
+# Sequence 2: NC_000866.4 Enterobacteria phage T4, complete genome
+# Total blocks found: 5
+# Analysis date: 2025-04-30 00:43:09
+
+Block_ID,Seq1_Start,Seq1_End,Seq2_Start,Seq2_End,Length,Identity,GC_Content,Sequence
+1,6394,6408,67284,67298,15,100.00,40.00,CTAAAACCAGTCTCT
+2,6500,6515,83243,83258,16,100.00,25.00,CAGCAAATAATAGTTT
+3,10218,10233,36965,36980,16,100.00,31.25,AGATTTACTCATTCGT
+4,13904,13918,77087,77101,15,100.00,6.67,TTATTTCAATAAAAA
+5,26703,26717,130521,130535,15,100.00,33.33,CTTTAGCTTGTTTTG
+
+# Summary Statistics:
+# Average block length: 15.40
+# Total nucleotides in synteny: 77
+# Total time taken: 2.51 seconds
