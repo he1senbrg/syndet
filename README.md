@@ -33,5 +33,5 @@ Where:
 ### Example Usage
 
 ```bash
-python syndet.py datasets/ecoli_k12.fasta datasets/ecoli_o157.fasta out_100.txt 200
+python syndet.py datasets/ecoli_k12.fasta datasets/ecoli_o157.fasta out_100.txt 100
 ```
