@@ -12,6 +12,22 @@ Syndet implements a memory-optimized suffix tree construction algorithm to ident
 - **Memory Optimization**: Employs `bytearray` and `array.array` for reduced memory footprint
 - **Block Merging**: Automatically merges overlapping synteny blocks
 - **Comprehensive Output**: Generates CSV reports with GC content analysis
+- **Modular Design**: Clean separation of concerns with multiple modules
+
+## Project Structure
+
+```
+syndet/
+├── syndet.py              # Main CLI entry point
+├── models.py              # Data structures and named tuples
+├── suffix_tree.py         # Core suffix tree implementation
+├── synteny_detector.py    # Synteny detection business logic
+├── utils.py               # File I/O and utility functions
+├── config.py              # Configuration and constants
+├── README.md              # This file
+├── .gitignore            # Git ignore patterns
+└── datasets/             # Sample data files
+```
 
 ## Installation
 
@@ -28,7 +44,7 @@ cd syndet
 
 ### Basic Command
 ```bash
-python syndet.py <genome1.fasta> <genome2.fasta> <output.csv> [min_block_length]
+python -m syndet <genome1.fasta> <genome2.fasta> <output.csv> [min_block_length]
 ```
 
 ### Parameters
@@ -39,10 +55,20 @@ python syndet.py <genome1.fasta> <genome2.fasta> <output.csv> [min_block_length]
 
 ### Example
 ```bash
-python syndet.py datasets/ecoli_k12.fasta datasets/ecoli_o157.fasta results.csv 200
+python -m syndet datasets/ecoli_k12.fasta datasets/ecoli_o157.fasta results.csv 200
 ```
 
-## Algorithm Details
+## Module Overview
+
+### Core Components
+
+- **`models.py`**: Contains `SyntenyBlock` named tuple and `Node` class for suffix tree nodes
+- **`suffix_tree.py`**: Implements the core Ukkonen's suffix tree algorithm with memory optimizations
+- **`synteny_detector.py`**: High-level synteny detection logic including block merging and filtering
+- **`utils.py`**: File I/O operations, FASTA parsing, and utility functions like GC content calculation
+- **`config.py`**: Configuration constants and logging setup
+
+### Algorithm Details
 
 The core algorithm centers on the `SuffixTree` class which implements several optimizations:
 
@@ -58,10 +84,6 @@ The tool generates CSV files containing:
 - GC content analysis
 - Sequence previews and summary statistics
 
-## Data Structures
-
-Synteny blocks are represented using a named tuple structure that encapsulates positional information, block characteristics, and quality metrics.
-
 ## Test Data
 
 The repository includes sample datasets in the `datasets/` directory for testing with various genomic sequences including E. coli variants and viral genomes.
@@ -69,3 +91,12 @@ The repository includes sample datasets in the `datasets/` directory for testing
 ## Logging
 
 The tool provides comprehensive logging to both console and file (`synteny.log`) for monitoring analysis progress and debugging.
+
+## Development
+
+To extend the functionality:
+
+1. **Add new algorithms**: Implement in separate modules following the existing pattern
+2. **Modify output formats**: Update functions in `utils.py`
+3. **Add new data structures**: Define in `models.py`
+4. **Adjust parameters**: Modify constants in `config.py`
